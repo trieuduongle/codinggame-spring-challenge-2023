@@ -12,17 +12,18 @@ enum ActionType {
 }
 
 enum SearchAlgorithmType {
-  BreathFirstSearch = 'BreathFirstSearch',
+  BreadthFirstSearch = 'BreadthFirstSearch',
   HeuristicSearch = 'HeuristicSearch',
 }
 
-interface ActionData {
+interface Action {
   actionType: ActionType;
   vertexName: number;
   strength: number;
 }
 
 interface VertexData {
+  name: number;
   resourceType: ResourceType;
   resources: number;
   neighbors: Set<number>;
@@ -34,45 +35,46 @@ function logError(name: string, message: string) {
   console.error(`${name}: ${message}`);
 }
 
-class Action {
-  actionType: ActionData['actionType'];
-  vertexName: ActionData['vertexName'];
-  strength: ActionData['strength'];
-  constructor({ actionType, vertexName, strength }: ActionData) {
-    this.actionType = actionType;
-    this.vertexName = vertexName;
-    this.strength = strength;
-  }
-
-  toString() {
-    return `${this.actionType} ${this.vertexName} ${this.strength}`;
-  }
+function convertActionToString({ actionType, vertexName, strength }: Action) {
+  return `${actionType} ${vertexName} ${strength}`;
 }
 
 /**
  * A node in graph
  */
 class Vertex {
+  name: VertexData['name'];
   resourceType: VertexData['resourceType'];
   resources: VertexData['resources'];
   neighbors: VertexData['neighbors'];
   myAnts: VertexData['myAnts'];
   oppAnts: VertexData['oppAnts'];
-  constructor(inputs: Partial<VertexData> = {}) {
-    const { resourceType, resources, neighbors, myAnts, oppAnts } = {
-      ...inputs,
+  constructor(inputs: Partial<VertexData> & Pick<VertexData, 'name'>) {
+    const { name, resourceType, resources, neighbors, myAnts, oppAnts } = {
       ...this._defaultVertexData(),
+      ...inputs,
     };
 
+    this.name = name;
     this.resourceType = resourceType;
     this.resources = resources;
     this.neighbors = neighbors;
     this.myAnts = myAnts;
     this.oppAnts = oppAnts;
-    this.neighbors = neighbors;
   }
 
-  private _defaultVertexData(): VertexData {
+  clone(): Vertex {
+    return new Vertex({
+      name: this.name,
+      resourceType: this.resourceType,
+      resources: this.resources,
+      neighbors: this.neighbors,
+      myAnts: this.myAnts,
+      oppAnts: this.oppAnts,
+    });
+  }
+
+  private _defaultVertexData(): Omit<VertexData, 'name'> {
     return {
       resourceType: ResourceType.EMPTY,
       resources: 0,
@@ -90,18 +92,102 @@ abstract class SearchAlgorithm {
   constructor(graph: Graph) {
     this.graph = graph;
   }
-  abstract findBestActions(sourceVertexName: number): Action[];
+  abstract findBestActions(sourceVertexName: number): string[];
 }
 
-class BreathFirstSearch extends SearchAlgorithm {
+/**
+ * Find path which have the largest score
+ * PROS:
+ * 1. Each step only can make 1 movement so inputting the whole path will work badly
+ * 2. Resources could be ate all before we reach the target vertex, so it will not wise to define a fixed path.
+ */
+class BreadthFirstSearch extends SearchAlgorithm {
   constructor(graph: Graph) {
     super(graph);
   }
 
-  findBestActions(sourceVertexName: number): Action[] {
-    const actions: Action[] = [];
-    
-    return actions;
+  findBestActions(sourceVertexName: number): string[] {
+    interface HarvestablePathData {
+      totalCrystals: number;
+      vertexPaths: Vertex[];
+    }
+
+    const serializedActions: string[] = [];
+    const visited = new Set();
+
+    const queue = [sourceVertexName];
+    const { myTotalAnts } = this.graph;
+
+    const harvestablePaths = new Set<HarvestablePathData>();
+    while (queue.length) {
+      const vertexName = queue.shift()!; // mutates the queue
+
+      const vertex = this.graph.getVertex(vertexName);
+      if (!vertex) {
+        continue;
+      }
+
+      if (harvestablePaths.size) {
+        const items: HarvestablePathData[] = [];
+        harvestablePaths.forEach(p => {
+          const lastVertex = p.vertexPaths[p.vertexPaths.length - 1];
+          if (lastVertex.neighbors.has(vertexName)) {
+            // Assumption we only care about Crystal type only.
+            let totalCrystals = p.totalCrystals;
+            if (vertex.resourceType === ResourceType.CRYSTAL) {
+              totalCrystals += vertex.resources;
+            }
+
+            const vertexPaths = p.vertexPaths.map(v => v.clone());
+            vertexPaths.push(vertex.clone());
+            const data: HarvestablePathData = {
+              totalCrystals,
+              vertexPaths,
+            };
+            items.push(data);
+          }
+        });
+        items.forEach(i => harvestablePaths.add(i));
+      } else {
+        harvestablePaths.add({
+          totalCrystals:
+            vertex.resourceType === ResourceType.CRYSTAL ? vertex.resources : 0,
+          vertexPaths: [vertex.clone()],
+        });
+      }
+
+      for (const nextNeighbor of vertex.neighbors) {
+        if (!visited.has(nextNeighbor)) {
+          // Save paths.
+          visited.add(nextNeighbor);
+          queue.push(nextNeighbor);
+        }
+      }
+    }
+
+    let maxHarvestablePath: Vertex[] = [];
+    let maxValue = -1;
+    harvestablePaths.forEach(p => {
+      if (
+        maxValue < p.totalCrystals &&
+        p.vertexPaths.length <= this.graph.numVertices
+      ) {
+        maxValue = p.totalCrystals;
+        maxHarvestablePath = p.vertexPaths;
+      }
+    });
+
+    const stepSize = maxHarvestablePath.length;
+    maxHarvestablePath.forEach(p => {
+      const act: Action = {
+        actionType: ActionType.Beacon,
+        vertexName: p.name,
+        strength: Math.floor(myTotalAnts / stepSize),
+      };
+      serializedActions.push(convertActionToString(act));
+    });
+
+    return serializedActions;
   }
 }
 
@@ -127,10 +213,18 @@ class Graph {
 
   get totalEggs() {
     let result = 0;
-    for (const [_vertexName, data] of this.adjacencyList.entries()) {
+    for (const data of this.adjacencyList.values()) {
       if (data.resourceType === ResourceType.EGG) {
         result += data.resources;
       }
+    }
+    return result;
+  }
+
+  get myTotalAnts() {
+    let result = 0;
+    for (const data of this.adjacencyList.values()) {
+      result += data.myAnts;
     }
     return result;
   }
@@ -146,8 +240,10 @@ class Graph {
     };
 
     const texts: string[] = [];
-    for (const [vertexName, data] of this.adjacencyList.entries()) {
-      const str = `${vertexName} -> ${[...data.neighbors].join(',')}`;
+    for (const data of this.adjacencyList.values()) {
+      const str = `${data.name}, ${data.resources}, ${data.resourceType} -> ${[
+        ...data.neighbors,
+      ].join(',')}`;
       texts.push(str);
     }
     output.text = texts.join('\n');
@@ -178,18 +274,15 @@ class Graph {
   updateVertexData(source: number, data: Partial<VertexData>) {
     const sourceVertex = this.getVertex(source);
     if (!sourceVertex) {
-      return logError(
-        'updateVertexData',
-        `Cannot update vertex ${source}`,
-      );
+      return logError('updateVertexData', `Cannot update vertex ${source}`);
     }
 
     Object.assign(sourceVertex, data);
   }
 
   private _setup(numVertices: number) {
-    for (let vertexIndex = 0; vertexIndex < numVertices; vertexIndex++) {
-      this.adjacencyList.set(vertexIndex, new Vertex());
+    for (let vertexName = 0; vertexName < numVertices; vertexName++) {
+      this.adjacencyList.set(vertexName, new Vertex({ name: vertexName }));
     }
   }
 }
@@ -210,6 +303,7 @@ function loadGraph(): Graph {
     const neigh5: number = parseInt(inputs[7]);
 
     const vertexData: Partial<VertexData> = {
+      name: vertexName,
       resourceType,
       resources: initialResources,
       myAnts: 0,
@@ -233,8 +327,8 @@ function buildSearcher(
   graph: Graph,
 ): SearchAlgorithm {
   switch (searchAlgorithmType) {
-    case SearchAlgorithmType.BreathFirstSearch:
-      return new BreathFirstSearch(graph);
+    case SearchAlgorithmType.BreadthFirstSearch:
+      return new BreadthFirstSearch(graph);
 
     default:
       const error = `Cannot build searcher: ${searchAlgorithmType}`;
@@ -245,7 +339,7 @@ function buildSearcher(
 
 (function () {
   const configs = {
-    searchType: SearchAlgorithmType.BreathFirstSearch,
+    searchType: SearchAlgorithmType.BreadthFirstSearch,
   };
 
   const graph = loadGraph();
