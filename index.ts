@@ -4,6 +4,24 @@ enum ResourceType {
   CRYSTAL = 2,
 }
 
+enum ActionType {
+  Beacon = 'BEACON',
+  Line = 'LINE',
+  Wait = 'WAIT',
+  Message = 'MESSAGE',
+}
+
+enum SearchAlgorithmType {
+  BreathFirstSearch = 'BreathFirstSearch',
+  HeuristicSearch = 'HeuristicSearch',
+}
+
+interface ActionData {
+  actionType: ActionType;
+  vertexName: number;
+  strength: number;
+}
+
 interface VertexData {
   resourceType: ResourceType;
   resources: number;
@@ -11,6 +29,26 @@ interface VertexData {
   myAnts: number;
   oppAnts: number;
 }
+
+function logError(name: string, message: string) {
+  console.error(`${name}: ${message}`);
+}
+
+class Action {
+  actionType: ActionData['actionType'];
+  vertexName: ActionData['vertexName'];
+  strength: ActionData['strength'];
+  constructor({ actionType, vertexName, strength }: ActionData) {
+    this.actionType = actionType;
+    this.vertexName = vertexName;
+    this.strength = strength;
+  }
+
+  toString() {
+    return `${this.actionType} ${this.vertexName} ${this.strength}`;
+  }
+}
+
 /**
  * A node in graph
  */
@@ -45,24 +83,81 @@ class Vertex {
   }
 }
 
+abstract class SearchAlgorithm {
+  protected prevActions: Action[] = [];
+  protected graph: Graph;
+
+  constructor(graph: Graph) {
+    this.graph = graph;
+  }
+  abstract findBestActions(sourceVertexName: number): Action[];
+}
+
+class BreathFirstSearch extends SearchAlgorithm {
+  constructor(graph: Graph) {
+    super(graph);
+  }
+
+  findBestActions(sourceVertexName: number): Action[] {
+    const actions: Action[] = [];
+    
+    return actions;
+  }
+}
+
 class Graph {
   /**
    * Represents a graph as an array of linked lists
    */
-  private readonly _adjacencyList = new Map<number, Vertex>();
+  readonly adjacencyList = new Map<number, Vertex>();
 
   get numVertices() {
-    return this._adjacencyList.size;
+    return this.adjacencyList.size;
+  }
+
+  get totalCrystals() {
+    let result = 0;
+    for (const [_vertexName, data] of this.adjacencyList.entries()) {
+      if (data.resourceType === ResourceType.CRYSTAL) {
+        result += data.resources;
+      }
+    }
+    return result;
+  }
+
+  get totalEggs() {
+    let result = 0;
+    for (const [_vertexName, data] of this.adjacencyList.entries()) {
+      if (data.resourceType === ResourceType.EGG) {
+        result += data.resources;
+      }
+    }
+    return result;
   }
 
   constructor(numVertices: number) {
     this._setup(numVertices);
   }
 
+  print() {
+    const output: { size: number; text: string } = {
+      size: this.numVertices,
+      text: '',
+    };
+
+    const texts: string[] = [];
+    for (const [vertexName, data] of this.adjacencyList.entries()) {
+      const str = `${vertexName} -> ${[...data.neighbors].join(',')}`;
+      texts.push(str);
+    }
+    output.text = texts.join('\n');
+    console.error(JSON.stringify(output));
+  }
+
   getVertex(source: number) {
-    const sourceVertex = this._adjacencyList.get(source);
+    const sourceVertex = this.adjacencyList.get(source);
     if (!sourceVertex) {
-      this.logError('getVertex', `Node ${source} doesn't exist in graph`);
+      logError('getVertex', `Node ${source} doesn't exist in graph`);
     }
 
     return sourceVertex;
@@ -72,7 +167,7 @@ class Graph {
     const sourceVertex = this.getVertex(source);
     const targetVertex = this.getVertex(target);
     if (!sourceVertex || !targetVertex) {
-      return this.logError(
+      return logError(
         'addEdge',
         `Add edge from ${source} to ${target} failed!`,
       );
@@ -83,7 +178,7 @@ class Graph {
   updateVertexData(source: number, data: Partial<VertexData>) {
     const sourceVertex = this.getVertex(source);
     if (!sourceVertex) {
-      return this.logError(
+      return logError(
         'updateVertexData',
         `Cannot update vertex ${source}`,
       );
@@ -92,29 +187,10 @@ class Graph {
     Object.assign(sourceVertex, data);
   }
 
-  print() {
-    const output: { size: number; text: string } = {
-      size: this.numVertices,
-      text: '',
-    };
-
-    const texts: string[] = [];
-    for (const [vertexName, data] of this._adjacencyList.entries()) {
-      const str = `${vertexName} -> ${[...data.neighbors].join(',')}`;
-      texts.push(str);
-    }
-    output.text = texts.join('\n');
-    console.error(JSON.stringify(output));
-  }
-
   private _setup(numVertices: number) {
     for (let vertexIndex = 0; vertexIndex < numVertices; vertexIndex++) {
-      this._adjacencyList.set(vertexIndex, new Vertex());
+      this.adjacencyList.set(vertexIndex, new Vertex());
     }
-  }
-
-  private logError(name: string, message: string) {
-    console.error(`${name}: ${message}`);
   }
 }
 
@@ -152,16 +228,46 @@ function loadGraph(): Graph {
   return graph;
 }
 
-(function () {
-  const graph = loadGraph();
+function buildSearcher(
+  searchAlgorithmType: SearchAlgorithmType,
+  graph: Graph,
+): SearchAlgorithm {
+  switch (searchAlgorithmType) {
+    case SearchAlgorithmType.BreathFirstSearch:
+      return new BreathFirstSearch(graph);
 
+    default:
+      const error = `Cannot build searcher: ${searchAlgorithmType}`;
+      console.error(error);
+      throw new Error(error);
+  }
+}
+
+(function () {
+  const configs = {
+    searchType: SearchAlgorithmType.BreathFirstSearch,
+  };
+
+  const graph = loadGraph();
+  const searcher = buildSearcher(configs.searchType, graph);
+
+  /**
+   * As Coding Game defined, numberOfBases will be = 1
+   */
   const numberOfBases: number = parseInt(readline());
-  const myBases: number[] = readline()
+  /**
+   * As Coding Game defined, my bases will has type [number], so we need to pick the first one
+   */
+  const myBase: number = readline()
     .split(' ')
-    .map(n => parseInt(n));
-  const oppBases: number[] = readline()
+    .map(n => parseInt(n))[0];
+
+  /**
+   * As Coding Game defined,  my opponent bases will has type [number], so we need to pick the first one
+   */
+  const oppBase: number = readline()
     .split(' ')
-    .map(n => parseInt(n));
+    .map(n => parseInt(n))[0];
 
   graph.print();
 
@@ -177,7 +283,7 @@ function loadGraph(): Graph {
     }
 
     // WAIT | LINE <sourceIdx> <targetIdx> <strength> | BEACON <cellIdx> <strength> | MESSAGE <text>
-    const actions = [];
+    const actions = searcher.findBestActions(myBase);
 
     // TODO: choose actions to perform and push them into actions
     // To debug: console.error('Debug messages...');
